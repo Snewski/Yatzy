@@ -1,0 +1,1161 @@
+---
+title: "Exam"
+author: "P.H.W"
+date: "2024-06-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load necessary library
+library(ggridges)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(forcats)
+set.seed(119201)
+```
+
+
+```{r, functions}
+
+# Function to roll dice
+roll_dice <- function(num_dice = 6) {
+  sample(1:6, num_dice, replace = TRUE)
+}
+
+# Function to calculate score for a specific outcome
+calculate_score <- function(outcome, dice, roll_count) {
+  dice_counts <- table(dice)
+  dice_sorted <- sort(dice, decreasing = TRUE)
+  
+  base_score <- switch(outcome,
+                       "ones" = sum(dice[dice == 1]),
+                       "twos" = sum(dice[dice == 2]),
+                       "threes" = sum(dice[dice == 3]),
+                       "fours" = sum(dice[dice == 4]),
+                       "fives" = sum(dice[dice == 5]),
+                       "sixes" = sum(dice[dice == 6]),
+                       "one_pair" = ifelse(any(dice_counts >= 2), max(as.numeric(names(dice_counts[dice_counts >= 2])) * 2), 0),
+                       "two_pairs" = ifelse(sum(dice_counts >= 2) >= 2, sum(as.numeric(sort(names(dice_counts[dice_counts >= 2]), decreasing = TRUE))[1:2] * 2), 0),
+                       "three_pairs" = ifelse(sum(dice_counts == 2) == 3, sum(dice), 0),
+                       "three_of_a_kind" = ifelse(any(dice_counts >= 3), max(as.numeric(names(dice_counts[dice_counts >= 3])) * 3), 0),
+                       "four_of_a_kind" = ifelse(any(dice_counts >= 4), max(as.numeric(names(dice_counts[dice_counts >= 4])) * 4), 0),
+                       "five_of_a_kind" = ifelse(any(dice_counts >= 5), max(as.numeric(names(dice_counts[dice_counts >= 5])) * 5), 0),
+                       "small_straight" = ifelse(all(1:5 %in% dice), 15, 0),
+                       "large_straight" = ifelse(all(2:6 %in% dice), 20, 0),
+                       "full_straight" = ifelse(all(1:6 %in% dice), 30, 0),
+                       "full_house" = ifelse(any(dice_counts >= 3) && sum(dice_counts >= 2) >= 2, {
+                         three_of_a_kind_val <- max(as.numeric(names(dice_counts[dice_counts >= 3])))
+                         # Remove the value used for the three of a kind from consideration for the pair
+                         remaining_counts <- dice_counts[names(dice_counts) != as.character(three_of_a_kind_val)]
+                         pair_val <- max(as.numeric(names(remaining_counts[remaining_counts >= 2])))
+                         three_of_a_kind_val * 3 + pair_val * 2
+                       }, 0),
+                       "castle" = ifelse(sum(dice_counts == 3) == 2, sum(dice), 0),
+                       "chance" = sum(dice),
+                       "yatzy" = ifelse(any(dice_counts == 6), 50 + sum(dice), 0),
+                       0)
+  
+  # Check if the outcome is "ones" through "sixes" and don't add roll bonus
+  if (outcome %in% c("ones", "twos", "threes", "fours", "fives", "sixes")) {
+    return(base_score)
+  }
+  
+  bonus <- 0
+  if (base_score > 0) {
+    bonus <- switch(as.character(roll_count),
+                  "1" = 10,
+                  "2" = 5,
+                  0)
+  }
+  return(base_score + bonus)
+}
+
+```
+
+
+```{r, up down agent}
+
+# Define the agent's strategy
+up_down <- function(outcome) {
+  remaining_rolls <- 3
+  kept_dice <- c()
+  
+  while (remaining_rolls > 0) {
+    # Roll the remaining dice
+    current_roll <- roll_dice(6 - length(kept_dice))
+    dice <- c(kept_dice, current_roll)
+    
+    if (outcome %in% c("ones", "twos", "threes", "fours", "fives", "sixes")) {
+      target_number <- switch(outcome,
+                              "ones" = 1,
+                              "twos" = 2,
+                              "threes" = 3,
+                              "fours" = 4,
+                              "fives" = 5,
+                              "sixes" = 6)
+      kept_dice <- c(kept_dice, current_roll[current_roll == target_number])
+    } else {
+      # Calculate the score for the current state of the dice
+      score <- calculate_score(outcome, dice, 3 - (remaining_rolls-1))
+      if (score > 0) {
+        return(list(dice = dice, score = score, roll_count = 3 - (remaining_rolls-1)))
+      }
+    }
+    
+    remaining_rolls <- remaining_rolls - 1
+  }
+  
+  score <- calculate_score(outcome, dice, 3 - remaining_rolls)
+  list(dice = dice, score = score, roll_count = 3 - remaining_rolls)
+}
+
+# Define the order of outcomes
+outcomes <- c("ones", "twos", "threes", "fours", "fives", "sixes",
+              "one_pair", "two_pairs", "three_pairs", "three_of_a_kind", "four_of_a_kind", "five_of_a_kind", 
+              "small_straight", "large_straight", "full_straight", "full_house", "castle", "chance", "yatzy")
+
+
+# Initialize results data frame
+results_up_down <- data.frame(outcome = character(), dice = I(list()), roll_count = integer(), score = integer(), turn = integer(), stringsAsFactors = FALSE)
+
+
+# Run the simulations
+for (sim in 1:10000) {
+  for (turn in seq_along(outcomes)) {
+    outcome <- outcomes[turn]
+    turn_result <- up_down(outcome)
+    results_up_down <- rbind(results_up_down, data.frame(outcome = outcome, dice = I(list(turn_result$dice)), roll_count = turn_result$roll_count, score = turn_result$score, turn = turn, simulation = sim, stringsAsFactors = FALSE))
+  }
+}
+
+
+# Bonus Calculation
+upper <- results_up_down %>% group_by(simulation) %>% summarise(sum(score[turn[1:6]]))
+bonus <- ifelse(upper[2] >= 84,50,0)
+
+# Extract the relevant columns from the upper DataFrame
+bonus <- upper %>%
+  transmute(outcome = "bonus", 
+            dice = I(list(NULL)),  # Just put something
+            roll_count = 0,  # Assigning 0 to avoid confusion
+            score = as.numeric(bonus), 
+            turn = max(results_up_down$turn) + 1,  # Assigning unique turn number
+            simulation = simulation)
+
+# Append the bonus turn to the original DataFrame
+results_up_down <- bind_rows(results_up_down, bonus)
+
+# Calculate cumulative score by turn
+results_up_down <- results_up_down %>%
+  group_by(simulation) %>%
+  mutate(cumulative_score = cumsum(score)) %>%
+  ungroup()
+
+
+
+# Filter the dataframe for the specific outcome
+filtered_up_down <- subset(results_up_down, outcome == "bonus")
+# Generate a frequency table of the scores for the specific outcome
+table(filtered_up_down$score)
+# Final score for each simulation
+final_score <- results_up_down %>% group_by(simulation) %>% summarise(sum=sum(score))
+# Average score for this strategy.
+sum(results_up_down$score)/length(unique(results_up_down$simulation))
+
+table(results_up_down$score)
+
+# handling list column and saving data to csv file
+up_down <- results_up_down %>% rowwise() %>% mutate_if(is.list, ~paste(unlist(.), collapse = ','))
+
+write.csv(up_down, "up_down.csv")
+
+
+```
+
+
+```{r, maximize agent}
+
+
+
+max_points <- function(roll_dice, min_max) {
+  remaining_rolls <- 3
+  kept_dice <- c()
+  best_score <- -1
+  best_outcome <- NULL
+  
+  while (remaining_rolls > 0) {
+    current_roll <- roll_dice(6 - length(kept_dice))
+    dice <- c(kept_dice, current_roll)
+    
+    for (outcome in min_max) {
+      score <- calculate_score(outcome, dice, 3 - (remaining_rolls - 1))
+      if (score > best_score) {
+        best_score <- score
+        best_outcome <- outcome
+      }
+    }
+    
+    remaining_rolls <- remaining_rolls - 1
+    
+    if (best_score > 0) {
+      break  # Stop rolling if a score above 0 is found
+    }
+  }
+  
+  if (best_score > 0) {
+    min_max <- setdiff(min_max, best_outcome)
+  } else {
+    min_max <- min_max[-1]  # Remove the first element from min_max
+  }
+  
+  list(outcome = best_outcome, dice = list(dice), score = best_score, roll_count = 3 - remaining_rolls, min_max = min_max)
+}
+
+
+# Initialize the results dataframe
+results_max_points <- data.frame(outcome = character(), dice = I(list()), roll_count = integer(), score = integer(), turn = integer(), stringsAsFactors = FALSE)
+
+
+# simulate
+for (sim in 1:10000) {
+  
+min_max <- c("one_pair", "small_straight", "three_of_a_kind", "large_straight", "two_pairs", "four_of_a_kind", "full_house", "five_of_a_kind", "full_straight", "three_pairs", "castle", "chance", "yatzy", "ones", "twos", "threes", "fours", "fives", "sixes")
+  
+  for (turn in 1:19) {
+  result <- max_points(roll_dice, min_max)
+  min_max <- result$min_max
+  
+  # Add the result to the dataframe
+  results_max_points <- rbind(results_max_points, data.frame(
+    outcome = result$outcome,
+    dice = I(list(result$dice)),
+    roll_count = result$roll_count,
+    score = result$score,
+    turn = turn,
+    simulation = sim,
+    stringsAsFactors = FALSE
+  ))
+  }
+}
+
+
+# Bonus Calculation
+upper <- results_max_points %>% group_by(simulation) %>% summarise(sum(score[outcome %in% upper_section]))
+bonus <- ifelse(upper[2] >= 84,50,0)
+
+# Extract the relevant columns from the upper DataFrame
+bonus <- upper %>%
+  transmute(outcome = "bonus", 
+            dice = I(list(NULL)),  # Just put something
+            roll_count = 0,  # Assigning 0 to avoid confusion
+            score = as.numeric(bonus), 
+            turn = max(results_max_points$turn) + 1,  # Assigning unique turn number
+            simulation = simulation)
+
+# Append the bonus turn to the original DataFrame
+results_max_points <- bind_rows(results_max_points, bonus)
+
+
+# Calculate cumulative score by turn
+results_max_points <- results_max_points %>%
+  group_by(simulation) %>%
+  mutate(cumulative_score = cumsum(score)) %>%
+  ungroup()
+
+
+# Filter the dataframe for the specific outcome
+filtered_max <- subset(results_max_points, outcome == "bonus")
+# Generate a frequency table of the scores for the specific outcome
+table(filtered_max$score)
+# Final score for each simulation
+final_score <- results_max_points %>% group_by(simulation) %>% summarise(sum=sum(score))
+# Average score for this strategy.
+sum(results_max_points$score)/length(unique(results_max_points$simulation))
+
+table(results_max_points$score)
+
+
+# handling list column and saving data to csv file
+max_points <- results_max_points %>% rowwise() %>% mutate_if(is.list, ~paste(unlist(.), collapse = ','))
+
+write.csv(max_points, "max_points.csv")
+
+
+
+
+```
+
+
+```{r, four plus agent}
+
+upper_section <- c("ones", "twos", "threes", "fours", "fives", "sixes")
+
+
+prio <- c("yatzy", "castle", "three_pairs", "five_of_a_kind", "full_straight", "full_house", "four_of_a_kind", "two_pairs", "large_straight", "small_straight")
+
+outcomes <- c("ones", "twos", "threes", "fours", "fives", "sixes",
+              "one_pair", "two_pairs", "three_pairs", "three_of_a_kind", "four_of_a_kind", "five_of_a_kind", 
+              "small_straight", "large_straight", "full_straight", "full_house", "castle", "chance", "yatzy")
+
+
+three_roll <- function(roll_dice, available_prio, available_upper, available_outcomes) {
+  remaining_rolls <- 3
+  kept_dice <- c()
+  
+  while (remaining_rolls > 0) {
+    current_roll <- roll_dice(6 - length(kept_dice))
+    dice <- c(kept_dice, current_roll)
+    
+    outcome_found <- FALSE
+    
+    for (outcome in available_prio) {
+      if (max(calculate_score(outcome, dice, 3 - (remaining_rolls - 1))) > 0) {
+        available_prio <- setdiff(available_prio, outcome)  # Remove the used outcome from available_prio
+        available_outcomes <- setdiff(available_outcomes, outcome)  # Remove the used outcome from available_outcomes
+        outcome_found <- TRUE
+        break
+      }
+    }
+    
+    if (outcome_found) {
+      return(list(outcome = outcome, dice = list(dice), score = calculate_score(outcome, dice, 3 - (remaining_rolls - 1)), roll_count = 3 - (remaining_rolls - 1), available_prio = available_prio, available_upper = available_upper, available_outcomes = available_outcomes))
+    } else { 
+      for (upper_outcome in available_upper) {
+        target_number <- switch(upper_outcome,
+                                "ones" = 1,
+                                "twos" = 2,
+                                "threes" = 3,
+                                "fours" = 4,
+                                "fives" = 5,
+                                "sixes" = 6)
+        if (max(sum(dice == target_number)) >= 3) {
+          kept_dice <- c(kept_dice, current_roll[current_roll == target_number])
+          break
+        }
+      }
+    }
+    remaining_rolls <- remaining_rolls - 1  
+  }
+  
+  # All rolls used, calculate scores for available outcomes
+  best_score <- -1
+  best_outcome <- NULL
+  
+  for (outcome in available_outcomes) {
+    score <- calculate_score(outcome, dice, 3)
+    if (score > best_score) {
+      best_score <- score
+      best_outcome <- outcome
+    }
+  }
+  
+  if (!is.null(best_outcome)) {
+    available_outcomes <- setdiff(available_outcomes, best_outcome)
+    if (best_outcome %in% available_upper) {
+      available_upper <- setdiff(available_upper, best_outcome)
+    }
+    if (best_outcome %in% available_prio) {
+      available_prio <- setdiff(available_prio, best_outcome)
+    }
+  }
+  
+  list(outcome = best_outcome, dice = list(dice), score = best_score, roll_count = 3 - remaining_rolls, available_prio = available_prio, available_upper = available_upper, available_outcomes = available_outcomes)
+}
+
+# Initialize the results dataframe
+results_three_roll <- data.frame(outcome = character(), dice = I(list()), roll_count = integer(), score = integer(), turn = integer(), stringsAsFactors = FALSE)
+
+# Initialize available outcomes
+# available_upper <- upper_section
+# available_prio <- prio
+#available_outcomes <- outcomes
+
+# Simulate 10000 games and store the results
+for (sim in 1:10000) {
+  
+available_upper <- upper_section
+available_prio <- prio
+available_outcomes <- outcomes
+  
+  for (turn in 1:19) {
+    
+    result <- three_roll(roll_dice, available_prio, available_upper, available_outcomes)
+    result$turn <- turn
+    
+    # Update available outcomes based on the result
+    available_prio <- result$available_prio
+    available_upper <- result$available_upper
+    available_outcomes <- result$available_outcomes
+    
+    # Remove the available outcome data from the result before storing it
+    result$available_prio <- NULL
+    result$available_upper <- NULL
+    result$available_outcomes <- NULL
+    
+    if (!is.null(result$outcome)) {
+    results_three_roll <- rbind(results_three_roll, data.frame(outcome = result$outcome, dice = I(result$dice), roll_count = result$roll_count, score = result$score, turn = turn, simulation = sim, stringsAsFactors = FALSE))
+    }
+  }
+}
+
+
+# Bonus Calculation
+upper <- results_three_roll %>% group_by(simulation) %>% summarise(sum(score[outcome %in% upper_section]))
+bonus <- ifelse(upper[2] >= 84,50,0)
+
+# Extract the relevant columns from the upper DataFrame
+bonus <- upper %>%
+  transmute(outcome = "bonus", 
+            dice = I(list(NULL)),  # Just put something
+            roll_count = 0,  # Assigning 0 to avoid confusion
+            score = as.numeric(bonus), 
+            turn = max(results_three_roll$turn) + 1,  # Assigning unique turn number
+            simulation = simulation)
+
+# Append the bonus turn to the original DataFrame
+results_three_roll <- bind_rows(results_three_roll, bonus)
+
+# Calculate cumulative score by turn
+results_three_roll <- results_three_roll %>%
+  group_by(simulation) %>%
+  mutate(cumulative_score = cumsum(score)) %>%
+  ungroup()
+
+
+# Filter the dataframe for the specific outcome
+filtered_three <- subset(results_three_roll, outcome == "bonus")
+# Generate a frequency table of the scores for the specific outcome
+table(filtered_three$score)
+# Final score for each simulation
+final_score <- results_three_roll %>% group_by(simulation) %>% summarise(sum=sum(score))
+# Average score for this strategy.
+sum(results_three_roll$score)/length(unique(results_three_roll$simulation))
+
+table(results_three_roll$score)
+
+
+# handling list column and saving data to csv file
+four_plus <- results_three_roll %>% rowwise() %>% mutate_if(is.list, ~paste(unlist(.), collapse = ','))
+
+write.csv(four_plus, "four_plus.csv")
+
+
+```
+
+
+```{r, four plus loose agent}
+
+upper_section <- c("ones", "twos", "threes", "fours", "fives", "sixes")
+
+
+prio <- c("yatzy", "castle", "three_pairs", "five_of_a_kind", "full_straight", "full_house", "four_of_a_kind", "two_pairs", "large_straight", "small_straight")
+
+outcomes <- c("ones", "twos", "threes", "fours", "fives", "sixes",
+              "one_pair", "two_pairs", "three_pairs", "three_of_a_kind", "four_of_a_kind", "five_of_a_kind", 
+              "small_straight", "large_straight", "full_straight", "full_house", "castle", "chance", "yatzy")
+
+
+three_roll_2 <- function(roll_dice, available_prio, available_upper, available_outcomes) {
+  remaining_rolls <- 3
+  kept_dice <- c()
+  
+  while (remaining_rolls > 0) {
+    current_roll <- roll_dice(6 - length(kept_dice))
+    dice <- c(kept_dice, current_roll)
+    
+    outcome_found <- FALSE
+    
+    for (outcome in available_prio) {
+      if (max(calculate_score(outcome, dice, 3 - (remaining_rolls - 1))) > 0) {
+        available_prio <- setdiff(available_prio, outcome)  # Remove the used outcome from available_prio
+        available_outcomes <- setdiff(available_outcomes, outcome)  # Remove the used outcome from available_outcomes
+        outcome_found <- TRUE
+        break
+      }
+    }
+    
+    if (outcome_found) {
+      return(list(outcome = outcome, dice = list(dice), score = calculate_score(outcome, dice, 3 - (remaining_rolls - 1)), roll_count = 3 - (remaining_rolls - 1), available_prio = available_prio, available_upper = available_upper, available_outcomes = available_outcomes))
+    } else { 
+      for (upper_outcome in available_upper) {
+        target_number <- switch(upper_outcome,
+                                "ones" = 1,
+                                "twos" = 2,
+                                "threes" = 3,
+                                "fours" = 4,
+                                "fives" = 5,
+                                "sixes" = 6)
+        if (max(sum(dice == target_number)) >= 2) {
+          kept_dice <- c(kept_dice, current_roll[current_roll == target_number])
+          break
+        }
+      }
+    }
+    remaining_rolls <- remaining_rolls - 1  
+  }
+  
+  # All rolls used, calculate scores for available outcomes
+  best_score <- -1
+  best_outcome <- NULL
+  
+  for (outcome in available_outcomes) {
+    score <- calculate_score(outcome, dice, 3)
+    if (score > best_score) {
+      best_score <- score
+      best_outcome <- outcome
+    }
+  }
+  
+  if (!is.null(best_outcome)) {
+    available_outcomes <- setdiff(available_outcomes, best_outcome)
+    if (best_outcome %in% available_upper) {
+      available_upper <- setdiff(available_upper, best_outcome)
+    }
+    if (best_outcome %in% available_prio) {
+      available_prio <- setdiff(available_prio, best_outcome)
+    }
+  }
+  
+  list(outcome = best_outcome, dice = list(dice), score = best_score, roll_count = 3 - remaining_rolls, available_prio = available_prio, available_upper = available_upper, available_outcomes = available_outcomes)
+}
+
+# Initialize the results dataframe
+results_three_roll_2 <- data.frame(outcome = character(), dice = I(list()), roll_count = integer(), score = integer(), turn = integer(), stringsAsFactors = FALSE)
+
+# Initialize available outcomes
+# available_upper <- upper_section
+# available_prio <- prio
+#available_outcomes <- outcomes
+
+# Simulate 10000 games and store the results
+for (sim in 1:10000) {
+  
+available_upper <- upper_section
+available_prio <- prio
+available_outcomes <- outcomes
+  
+  for (turn in 1:19) {
+    
+    result <- three_roll_2(roll_dice, available_prio, available_upper, available_outcomes)
+    result$turn <- turn
+    
+    # Update available outcomes based on the result
+    available_prio <- result$available_prio
+    available_upper <- result$available_upper
+    available_outcomes <- result$available_outcomes
+    
+    # Remove the available outcome data from the result before storing it
+    result$available_prio <- NULL
+    result$available_upper <- NULL
+    result$available_outcomes <- NULL
+    
+    if (!is.null(result$outcome)) {
+    results_three_roll_2 <- rbind(results_three_roll_2, data.frame(outcome = result$outcome, dice = I(result$dice), roll_count = result$roll_count, score = result$score, turn = turn, simulation = sim, stringsAsFactors = FALSE))
+    }
+  }
+}
+
+
+
+# Bonus Calculation
+upper <- results_three_roll_2 %>% group_by(simulation) %>% summarise(sum(score[outcome %in% upper_section]))
+bonus <- ifelse(upper[2] >= 84,50,0)
+
+# Extract the relevant columns from the upper DataFrame
+bonus <- upper %>%
+  transmute(outcome = "bonus", 
+            dice = I(list(NULL)),  # Just put something
+            roll_count = 0,  # Assigning 0 to avoid confusion
+            score = as.numeric(bonus), 
+            turn = max(results_three_roll_2$turn) + 1,  # Assigning unique turn number
+            simulation = simulation)
+
+# Append the bonus turn to the original DataFrame
+results_three_roll_2 <- bind_rows(results_three_roll_2, bonus)
+
+# Calculate cumulative score by turn
+results_three_roll_2 <- results_three_roll_2 %>%
+  group_by(simulation) %>%
+  mutate(cumulative_score = cumsum(score)) %>%
+  ungroup()
+
+
+# Filter the dataframe for the specific outcome
+filtered_three <- subset(results_three_roll_2, outcome == "yatzy")
+# Generate a frequency table of the scores for the specific outcome
+table(filtered_three$score)
+# Final score for each simulation
+final_score <- combined_results %>% group_by(strategy, simulation) %>% summarise(sum=sum(score))
+# Average score for this strategy.
+sum(results_three_roll_2$score)/length(unique(results_three_roll_2$simulation))
+
+table(results_three_roll_2$score)
+
+
+# handling list column and saving data to csv file
+four_plus_loose <- results_three_roll_2 %>% rowwise() %>% mutate_if(is.list, ~paste(unlist(.), collapse = ','))
+
+write.csv(four_plus_loose, "four_plus_loose.csv")
+
+
+
+
+
+
+```
+
+
+```{r, strict bonus agent}
+bonus_strategy_strict <- function(roll_dice, upper_section, min_max) {
+  remaining_rolls <- 3
+  kept_dice <- c()
+  best_score <- 0
+  best_outcome <- NULL
+  upper_outcome <- NULL
+  prioritized_upper_outcome <- FALSE
+  target_number <- NULL
+
+  while (remaining_rolls > 0) {
+    current_roll <- roll_dice(6 - length(kept_dice))
+    dice <- c(kept_dice, current_roll)
+    
+    if (!prioritized_upper_outcome) {
+      for (outcome in upper_section) {
+        target_number <- switch(outcome,
+                                "ones" = 1,
+                                "twos" = 2,
+                                "threes" = 3,
+                                "fours" = 4,
+                                "fives" = 5,
+                                "sixes" = 6)
+        if (sum(dice == max(target_number)) >= 3) {
+          upper_outcome <- outcome
+          prioritized_upper_outcome <- TRUE
+          break
+        }
+      }
+    }
+    
+    if (prioritized_upper_outcome) {
+      kept_dice <- c(kept_dice, current_roll[current_roll == target_number])
+      if (sum(dice == target_number) >= 4) {
+        score <- calculate_score(upper_outcome, dice, 3 - (remaining_rolls - 1))
+        min_max <- setdiff(min_max, upper_outcome)
+        upper_section <- setdiff(upper_section, upper_outcome)
+        return(list(outcome = upper_outcome, dice = list(dice), score = score, roll_count = 3 - (remaining_rolls - 1), min_max = min_max, upper_section = upper_section))
+      }
+    } else {
+      for (outcome in min_max) {
+        if (outcome %in% upper_section) next
+        score <- calculate_score(outcome, dice, 3 - (remaining_rolls - 1))
+        if (score > best_score) {
+          best_score <- score
+          best_outcome <- outcome
+        }
+      }
+      
+      if (best_score > 0) {
+        min_max <- setdiff(min_max, best_outcome)
+        return(list(outcome = best_outcome, dice = list(dice), score = best_score, roll_count = 3 - (remaining_rolls - 1), min_max = min_max, upper_section = upper_section))
+      }
+    }
+    
+    remaining_rolls <- remaining_rolls - 1
+  }
+  
+  best_score <- -1
+  best_outcome <- NULL
+  
+  for (outcome in min_max) {
+    score <- calculate_score(outcome, dice, 3)
+    if (score > best_score) {
+      best_score <- score
+      best_outcome <- outcome
+    }
+  }
+  
+  if (!is.null(best_outcome)) {
+    min_max <- setdiff(min_max, best_outcome)
+    if (best_outcome %in% upper_section) {
+      upper_section <- setdiff(upper_section, best_outcome)
+    }
+  } else {
+    best_outcome <- min_max[1]
+    min_max <- min_max[-1]
+  }
+  
+  list(outcome = best_outcome, dice = list(dice), score = best_score, roll_count = 3 - remaining_rolls, min_max = min_max, upper_section = upper_section)
+}
+
+# Simulate 10000 games and store the results
+results_strict_bonus_strategy <- data.frame(outcome = character(), dice = I(list()), roll_count = integer(), score = integer(), turn = integer(), simulation = integer(), stringsAsFactors = FALSE)
+
+for (sim in 1:10000) {
+  upper_section <- c("ones", "twos", "threes", "fours", "fives", "sixes")
+  min_max <- c("one_pair", "small_straight", "three_of_a_kind", "large_straight", "two_pairs", "four_of_a_kind", "full_house", "five_of_a_kind", "full_straight", "three_pairs", "castle", "chance", "yatzy", "ones", "twos", "threes", "fours", "fives", "sixes")
+  
+  for (turn in 1:19) {
+    result <- bonus_strategy_strict(roll_dice, upper_section, min_max)
+    upper_section <- result$upper_section
+    min_max <- result$min_max
+    
+    if (!is.null(result$outcome)) {
+      results_strict_bonus_strategy <- rbind(results_strict_bonus_strategy, data.frame(
+        outcome = result$outcome,
+        dice = I(result$dice),
+        roll_count = result$roll_count,
+        score = result$score,
+        turn = turn,
+        simulation = sim,
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+}
+
+
+
+upper_section <- c("ones", "twos", "threes", "fours", "fives", "sixes")
+# Bonus Calculation
+upper <- results_strict_bonus_strategy %>% group_by(simulation) %>% summarise(sum(score[outcome %in% upper_section]))
+bonus <- ifelse(upper[2] >= 84,50,0)
+
+# Extract the relevant columns from the upper DataFrame
+bonus <- upper %>%
+  transmute(outcome = "bonus", 
+            dice = I(list(NULL)),  # Just put something
+            roll_count = 0,  # Assigning 0 to avoid confusion
+            score = as.numeric(bonus), 
+            turn = max(results_strict_bonus_strategy$turn) + 1,  # Assigning unique turn number
+            simulation = simulation)
+
+# Append the bonus turn to the original DataFrame
+results_strict_bonus_strategy <- bind_rows(results_strict_bonus_strategy, bonus)
+
+
+# Calculate cumulative score by turn
+results_strict_bonus_strategy <- results_strict_bonus_strategy %>%
+  group_by(simulation) %>%
+  mutate(cumulative_score = cumsum(score)) %>%
+  ungroup()
+
+
+# Filter the dataframe for the specific outcome
+filtered_bonus <- subset(results_strict_bonus_strategy, outcome == "bonus")
+# Generate a frequency table of the scores for the specific outcome
+table(filtered_bonus$score)
+# Final score for each simulation
+final_score <- results_strict_bonus_strategy %>% group_by(simulation) %>% summarise(sum=sum(score))
+# Average score for this strategy.
+sum(results_strict_bonus_strategy$score)/length(unique(results_strict_bonus_strategy$simulation))
+
+table(results_strict_bonus_strategy$score)
+
+# handling list column and saving data to csv file
+strict_bonus <- results_strict_bonus_strategy %>% rowwise() %>% mutate_if(is.list, ~paste(unlist(.), collapse = ','))
+
+write.csv(strict_bonus, "strict_bonus.csv")
+
+
+
+```
+
+
+```{r, loose bonus agent}
+
+bonus_strategy_loose <- function(roll_dice, upper_section, min_max) {
+  remaining_rolls <- 3
+  kept_dice <- c()
+  best_score <- 0
+  best_outcome <- NULL
+  upper_outcome <- NULL
+  prioritized_upper_outcome <- FALSE
+  target_number <- NULL
+
+  while (remaining_rolls > 0) {
+    current_roll <- roll_dice(6 - length(kept_dice))
+    dice <- c(kept_dice, current_roll)
+    
+    if (!prioritized_upper_outcome) {
+      for (outcome in upper_section) {
+        target_number <- switch(outcome,
+                                "ones" = 1,
+                                "twos" = 2,
+                                "threes" = 3,
+                                "fours" = 4,
+                                "fives" = 5,
+                                "sixes" = 6)
+        if (sum(dice == max(target_number)) >= 2) {
+          upper_outcome <- outcome
+          prioritized_upper_outcome <- TRUE
+          break
+        }
+      }
+    }
+    
+    if (prioritized_upper_outcome) {
+      kept_dice <- c(kept_dice, current_roll[current_roll == target_number])
+      if (sum(dice == target_number) >= 4) {
+        score <- calculate_score(upper_outcome, dice, 3 - (remaining_rolls - 1))
+        min_max <- setdiff(min_max, upper_outcome)
+        upper_section <- setdiff(upper_section, upper_outcome)
+        return(list(outcome = upper_outcome, dice = list(dice), score = score, roll_count = 3 - (remaining_rolls - 1), min_max = min_max, upper_section = upper_section))
+      }
+    } else {
+      for (outcome in min_max) {
+        if (outcome %in% upper_section) next
+        score <- calculate_score(outcome, dice, 3 - (remaining_rolls - 1))
+        if (score > best_score) {
+          best_score <- score
+          best_outcome <- outcome
+        }
+      }
+      
+      if (best_score > 0) {
+        min_max <- setdiff(min_max, best_outcome)
+        return(list(outcome = best_outcome, dice = list(dice), score = best_score, roll_count = 3 - (remaining_rolls - 1), min_max = min_max, upper_section = upper_section))
+      }
+    }
+    
+    remaining_rolls <- remaining_rolls - 1
+  }
+  
+  best_score <- -1
+  best_outcome <- NULL
+  
+  for (outcome in min_max) {
+    score <- calculate_score(outcome, dice, 3)
+    if (score > best_score) {
+      best_score <- score
+      best_outcome <- outcome
+    }
+  }
+  
+  if (!is.null(best_outcome)) {
+    min_max <- setdiff(min_max, best_outcome)
+    if (best_outcome %in% upper_section) {
+      upper_section <- setdiff(upper_section, best_outcome)
+    }
+  } else {
+    best_outcome <- min_max[1]
+    min_max <- min_max[-1]
+  }
+  
+  list(outcome = best_outcome, dice = list(dice), score = best_score, roll_count = 3 - remaining_rolls, min_max = min_max, upper_section = upper_section)
+}
+
+# Simulate 10000 games and store the results
+results_loose_bonus_strategy <- data.frame(outcome = character(), dice = I(list()), roll_count = integer(), score = integer(), turn = integer(), simulation = integer(), stringsAsFactors = FALSE)
+
+for (sim in 1:10000) {
+  upper_section <- c("ones", "twos", "threes", "fours", "fives", "sixes")
+  min_max <- c("one_pair", "small_straight", "three_of_a_kind", "large_straight", "two_pairs", "four_of_a_kind", "full_house", "five_of_a_kind", "full_straight", "three_pairs", "castle", "chance", "yatzy", "ones", "twos", "threes", "fours", "fives", "sixes")
+  
+  for (turn in 1:19) {
+    result <- bonus_strategy_loose(roll_dice, upper_section, min_max)
+    upper_section <- result$upper_section
+    min_max <- result$min_max
+    
+    if (!is.null(result$outcome)) {
+      results_loose_bonus_strategy <- rbind(results_loose_bonus_strategy, data.frame(
+        outcome = result$outcome,
+        dice = I(result$dice),
+        roll_count = result$roll_count,
+        score = result$score,
+        turn = turn,
+        simulation = sim,
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+}
+
+
+
+upper_section <- c("ones", "twos", "threes", "fours", "fives", "sixes")
+# Bonus Calculation
+upper <- results_loose_bonus_strategy %>% group_by(simulation) %>% summarise(sum(score[outcome %in% upper_section]))
+bonus <- ifelse(upper[2] >= 84,50,0)
+
+# Extract the relevant columns from the upper DataFrame
+bonus <- upper %>%
+  transmute(outcome = "bonus", 
+            dice = I(list(NULL)),  # Just put something
+            roll_count = 0,  # Assigning 0 to avoid confusion
+            score = as.numeric(bonus), 
+            turn = max(results_loose_bonus_strategy$turn) + 1,  # Assigning unique turn number
+            simulation = simulation)
+
+# Append the bonus turn to the original DataFrame
+results_loose_bonus_strategy <- bind_rows(results_loose_bonus_strategy, bonus)
+
+
+# Calculate cumulative score by turn
+results_loose_bonus_strategy <- results_loose_bonus_strategy %>%
+  group_by(simulation) %>%
+  mutate(cumulative_score = cumsum(score)) %>%
+  ungroup()
+
+
+# Filter the dataframe for the specific outcome
+filtered_bonus <- subset(results_loose_bonus_strategy, outcome == "bonus")
+# Generate a frequency table of the scores for the specific outcome
+table(filtered_bonus$score)
+# Final score for each simulation
+final_score <- results_loose_bonus_strategy %>% group_by(simulation) %>% summarise(sum=sum(score))
+# Average score for this strategy.
+sum(results_loose_bonus_strategy$score)/length(unique(results_loose_bonus_strategy$simulation))
+
+table(results_loose_bonus_strategy$score)
+
+# handling list column and saving data to csv file
+loose_bonus <- results_loose_bonus_strategy %>% rowwise() %>% mutate_if(is.list, ~paste(unlist(.), collapse = ','))
+
+write.csv(loose_bonus, "loose_bonus.csv")
+
+
+```
+
+
+```{r, plotting}
+
+# loading the generated data
+up_down <- read.csv("up_down.csv")[,2:8]
+four_plus <- read.csv("four_plus.csv")[,2:8]
+four_plus_loose <- read.csv("four_plus_loose.csv")[,2:8]
+max_points <- read.csv("max_points.csv")[,2:8]
+strict_bonus <- read.csv("strict_bonus.csv")[,2:8]
+loose_bonus <- read.csv("loose_bonus.csv")[,2:8]
+
+# Ordering the outcomes for the x-axis
+outcomes_order <- c("ones", "twos", "threes", "fours", "fives", "sixes", "bonus",
+              "one_pair", "two_pairs", "three_pairs", "three_of_a_kind", "four_of_a_kind", "five_of_a_kind", 
+              "small_straight", "large_straight", "full_straight", "full_house", "castle", "chance", "yatzy")
+
+# Convert outcome to factor with custom levels based on outcomes
+up_down$outcome <- factor(up_down$outcome, levels = outcomes_order)
+four_plus$outcome <- factor(four_plus$outcome, levels = outcomes_order)
+four_plus_loose$outcome <- factor(four_plus_loose$outcome, levels = outcomes_order)
+max_points$outcome <- factor(max_points$outcome, levels = outcomes_order)
+strict_bonus$outcome <- factor(strict_bonus$outcome, levels = outcomes_order)
+loose_bonus$outcome <- factor(loose_bonus$outcome, levels = outcomes_order)
+
+combined_results <- rbind(up_down, four_plus, four_plus_loose, max_points, strict_bonus, loose_bonus)
+
+combined_results <- bind_rows(mutate(up_down, strategy = "up_down"),
+                              mutate(four_plus, strategy = "four_plus"),
+                              mutate(four_plus_loose, strategy = "four_plus_loose"),
+                              mutate(max_points, strategy = "max_points"),
+                              mutate(strict_bonus, strategy = "strict_bonus"),
+                              mutate(loose_bonus, strategy = "loose_bonus"))
+
+
+# handling list column and saving data to csv file
+#combined_result <- combined_results %>% rowwise() %>% mutate_if(is.list, ~paste(unlist(.), collapse = ','))
+# saving data
+#write.csv(combined_result, "combined_results.csv")
+
+# plotting score distributions for each outcome
+up_down %>% 
+  ggplot(aes(outcome, score)) + 
+  geom_point() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+four_plus %>% 
+  ggplot(aes(outcome, score)) + 
+  geom_point() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+max_points %>% 
+  ggplot(aes(outcome, score)) + 
+  geom_point() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+strict_bonus %>% 
+  ggplot(aes(outcome, score)) + 
+  geom_point() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+loose_bonus %>% 
+  ggplot(aes(outcome, score)) + 
+  geom_point() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+# Average cumulative scores per turn:
+
+# Calculating the mean score for each strategy
+mean_scores <- combined_results %>% group_by(strategy) %>% summarise(mean = sum(score)/length(unique(simulation))) %>% arrange(desc(mean))
+
+# Create a named vector of the new labels with mean values
+strategy_labels <- paste0(mean_scores$strategy, " (mean final score: ", round(mean_scores$mean, 2), ")")
+names(strategy_labels) <- mean_scores$strategy
+
+# Reorder the levels of the strategy factor based on the sorted mean scores
+combined_results <- combined_results %>%
+  mutate(strategy = factor(strategy, levels = mean_scores$strategy))
+
+# Plotting
+cumsum <- combined_results %>% 
+  ggplot(aes(turn, cumulative_score, group = strategy)) + 
+  stat_summary(geom = "point", fun = "mean", aes(fill = strategy), size = 2, shape = 21) +
+  scale_x_continuous(breaks = seq(min(combined_results$turn), max(combined_results$turn), by = 1)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_manual(values = c("up_down" = "blue", "four_plus" = "green", "four_plus_loose" = "brown","max_points" = "red", "strict_bonus" = "yellow", "loose_bonus" = "pink"), labels = strategy_labels) + 
+  ggtitle("Average cumulative scores per turn:") +
+  theme(
+    legend.position = c(.95, .35),
+    legend.justification = c("right", "top"),
+    legend.box.just = "right",
+    legend.margin = margin(5, 5, 5, 5)
+    )
+
+# Saving the plot
+#ggsave("cumsum.png", plot = cumsum)
+
+
+# Aggregate the count of zero scores for each strategy
+zero_scores <- combined_results %>%
+  filter(score == 0) %>%
+  group_by(strategy) %>%
+  summarize(count_zero = n()) %>% 
+  arrange(order(count_zero))
+
+zero_scores <- zero_scores %>%
+  mutate(strategy = factor(strategy, levels = zero_scores$strategy))
+
+# Create a named vector of the new labels with zero counts
+strategy_labels <- paste0(zero_scores$strategy, " (Count: ", zero_scores$count_zero, ")")
+names(strategy_labels) <- zero_scores$strategy
+
+
+# Plot the count of zero scores for each strategy
+zero <- ggplot(zero_scores, aes(x = reorder(strategy, count_zero), y = count_zero, fill = strategy)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("up_down" = "blue", "four_plus" = "green", "four_plus_loose" = "brown","max_points" = "red", "strict_bonus" = "yellow", "loose_bonus" = "pink"), labels = strategy_labels) +
+  labs(title = "Count of Zero Scores for Each Strategy",
+       x = "Strategy",
+       y = "Zero Scores") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  scale_y_continuous(breaks = seq(0,100000, by = 5000))
+
+# saving the plot
+#ggsave("zero.png", plot = zero)
+
+
+# Aggregate the count of zero scores for each outcome and each strategy
+zero_scores <- combined_results %>%
+  filter(score == 0) %>%
+  group_by(strategy, outcome) %>%
+  summarize(count_zero = n(), .groups = 'drop')
+
+# If some outcomes have no zero scores for a strategy, include them with a count of zero
+all_outcomes <- unique(combined_results$outcome)
+all_strategies <- unique(combined_results$strategy)
+combinations <- expand.grid(strategy = all_strategies, outcome = all_outcomes)
+zero_scores <- merge(combinations, zero_scores, by = c("strategy", "outcome"), all.x = TRUE)
+zero_scores$count_zero[is.na(zero_scores$count_zero)] <- 0
+
+# sub-setting
+zero_scores_high <- zero_scores %>% group_by(outcome) %>% filter(sum(count_zero) > 2500)
+zero_scores_low <- zero_scores %>% group_by(outcome) %>% filter(sum(count_zero) < 2500)
+
+# Plot the count of zero scores for each outcome, stacked by strategy
+low <- ggplot(zero_scores_low, aes(x = reorder(outcome, count_zero), y = count_zero, fill = strategy)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = c("up_down" = "blue", "four_plus" = "green", "four_plus_loose" = "brown","max_points" = "red", "strict_bonus" = "yellow", "loose_bonus" = "pink")) +
+  labs(title = "Count of Zero Scores for Each Outcome by Strategy (n<2500)",
+       x = "Outcome",
+       y = "Count of Zero Scores") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(breaks = seq(0,2500, by = 100))
+
+high <- ggplot(zero_scores_high, aes(x = reorder(outcome, count_zero), y = count_zero, fill = strategy)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = c("up_down" = "blue", "four_plus" = "green", "four_plus_loose" = "brown","max_points" = "red", "strict_bonus" = "yellow", "loose_bonus" = "pink")) +
+  labs(title = "Count of Zero Scores for Each Outcome by Strategy (n>2500)",
+       x = "Outcome",
+       y = "Count of Zero Scores") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(breaks = seq(0,60000, by = 2500))
+
+grid.arrange(low,high)
+
+# Saving the plots
+#ggsave("low.png", plot = low)
+#ggsave("high.png", plot = high)
+
+
+final_score <- combined_results %>% group_by(strategy, simulation) %>% summarise(sum=sum(score))
+final_score <- final_score %>% arrange(desc(sum))
+final_score_top5000 <- final_score[1:5000,]
+final_score_bot5000 <- final_score[55001:60000,]
+final_score_300 <- final_score %>% filter(sum>=300)
+final_score_400 <- final_score %>% filter(sum>=400)
+table(final_score_400$strategy)
+
+
+
+final_score_top5000 %>% ggplot(aes(x = fct_rev(fct_infreq(strategy)), fill = strategy)) +
+  geom_bar() +
+  theme_minimal() + 
+  labs(title = "Final Scores Above 400 Points", x = "Strategy", y = "Count") +
+  scale_fill_manual(values = c("up_down" = "blue", "four_plus" = "green", "four_plus_loose" = "brown","max_points" = "red", "strict_bonus" = "yellow", "loose_bonus" = "pink")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(breaks = seq(0,5000, by = 500))
+
+
+
+# Filter the dataframe for the specific outcome
+filtered_bonus <- subset(combined_results, outcome == "bonus")
+filtered_bonus <- filtered_bonus %>% filter(score>0)
+# Generate a frequency table of the strategy for the specific outcome
+table(filtered_bonus$strategy)
+
+
+dens <- final_score %>% ggplot(aes(sum, strategy, fill = strategy)) + 
+  stat_density_ridges(quantile_lines = TRUE, quantiles = 0.5, bandwidth = 1) +
+  scale_fill_manual(values = c("up_down" = "blue", "four_plus" = "green", "four_plus_loose" = "brown","max_points" = "red", "strict_bonus" = "yellow", "loose_bonus" = "pink")) +
+  theme_minimal() + 
+  labs(title = "Density Distributions of the Final Scores per Strategy")
+
+ggsave("dens.png", plot = dens)
+
+
+final_score %>% group_by(strategy) %>% summarise(minimum = min(sum))
+final_score %>% group_by(strategy) %>% summarise(maximum = max(sum))
+final_score %>% group_by(strategy) %>% summarise(mean = mean(sum))
+final_score %>% group_by(strategy) %>% summarise(sd = sd(sum))
+
+
+# creating dataframe with non-zero scores in the lower section 
+# Lower section outcomes
+lower_outcomes <- c("one_pair", "two_pairs", "three_pairs", "three_of_a_kind", "four_of_a_kind", "five_of_a_kind", 
+                    "small_straight", "large_straight", "full_straight", "full_house", "castle", "chance", "yatzy")
+
+combined_results_plus <- combined_results %>% filter(score>0, outcome %in% lower_outcomes)
+
+
+
+# plotting rolls used for each strategy to attain points.
+rolls <- combined_results_plus %>% ggplot(aes(roll_count, fill = strategy)) +
+  geom_bar() +
+  facet_wrap(~ strategy) +
+  scale_fill_manual(values = c("up_down" = "blue", "four_plus" = "green", "four_plus_loose" = "brown","max_points" = "red", "strict_bonus" = "yellow", "loose_bonus" = "pink")) +
+  scale_x_continuous(limits = c(0,4))+
+  scale_y_continuous(labels = scales::comma, breaks = seq(0,75000, by = 10000)) +
+  labs(title = "Rolls used for scores > 0 in the Lower Section")
+
+# saving plot
+ggsave("rolls.png", plot = rolls)
+
+
+```
+
+
+
+
+
